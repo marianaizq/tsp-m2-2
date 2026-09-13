@@ -6,7 +6,7 @@ Series de Tiempo (ITESO).
 ## Integrantes
 
 - Esteban Vega Campos
-- Owen David Loza
+- Owen David Loza Quirarte
 - Mariana Izquierdo Preciado
 - Jocelyn Jiménez Buenrostro
 

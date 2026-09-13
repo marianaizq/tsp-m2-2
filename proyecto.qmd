@@ -64,3 +64,4 @@ mi_serie |>
 - Gráfica 3: Es el patrón de la **estacionalidad**, en donde se observa que es muy regular y repetitivo, prácticamente idéntico ciclo tras ciclo.
 
 - Gráfica 4: Los **residuos** que quedan después de quitar la tendencia y la estacionalidad. Se visualizan puntos aleatorios; aunque hay un pico más grande alrededor de finales de los 80s, el cual podría indicar un evento específico.
+
