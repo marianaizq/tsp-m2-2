@@ -1,14 +1,14 @@
-# [Nombre del equipo] — Proyecto Módulo [N]
+# Equipo M1-2 — Proyecto Módulo 1
 
-Repo de equipo para el proyecto del Módulo [N] del curso de Forecasting de
+Repo de equipo para el proyecto del Módulo 1 del curso de Forecasting de
 Series de Tiempo (ITESO).
 
 ## Integrantes
 
-- Nombre 1
-- Nombre 2
-- Nombre 3
-- Nombre 4
+- Esteban Vega Campos
+- Owen David Loza
+- Mariana Izquierdo Preciado
+- Jocelyn Jiménez Buenrostro
 
 ## Qué incluye este repo
 
@@ -33,3 +33,6 @@ Material y convenciones del curso: <https://pbenavidesh.github.io/narsil>
 ## Licencia
 
 Ver [`LICENSE`](./LICENSE).
+
+## Serie asignada
+New South Wales — Pharmaceutical, cosmetic and toiletry goods retailing (Series ID: A3349401C)
