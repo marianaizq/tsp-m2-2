@@ -6,127 +6,60 @@ format:
     embed-resources: true
     toc: true
 ---
-
-
 ```{r}
 library(fpp3)
-
 mi_serie <- aus_retail |> 
   filter(`Series ID` == "A3349401C")
-
 mi_serie
 ```
 ## Análisis exploratorio
 ```{r}
 mi_serie |> autoplot(Turnover)
 ```
-
 Como se puede observar, la serie muestra una tendencia creciente notoria a lo largo del tiempo (1982-2018). De igual forma, se presenta una estacionalidad anual con picos recurrentes que coinciden con temporadas altas. Por el otro lado, la amplitud de la varianza aumenta conforme crece el nivel de la serie, lo cual nos dice que es necesario estabilizar la varianza. 
-
-
 ```{r}
 mi_serie |> gg_season(Turnover)
 ```
-
 El gráfico estacional nos confirma que diciembre es el mes con mayor turnover en todos los años de la serie, seguido de una caída en enero y febrero. Este suceso se repite de forma estable año con año, aunque la magnitud de estos picos crece junto con el nivel de la serie.
-
 ```{r}
 mi_serie |> gg_subseries(Turnover)
 ```
-
 El gráfico de subseries nos confirma que el patrón estacional es estable a lo largo del tiempo. Cada mes mantiene una tendencia de crecimiento similar y diciembre se mantiene como el mes con un mayor turnover promedio.
-
 > **Conclusión EDA:** la serie presenta tendencia creciente y estacionalidad anual, con una varianza que aumenta junto con el nivel. Esto indica que se necesita estabilizar la varianza antes de modelar.
-
-
 ## Estabilización de varianza
-
 ```{r}
 lambda <- mi_serie |>
   features(Turnover, features = guerrero) |>
   pull(lambda_guerrero)
-
 lambda
 ```
-
 Se estimó el parámetro de Box-Cox y nos dio un resultado de (0.088). Este valor es cercano a 0, lo cual confirma que se requiere estabilizar la varianza, con una transformación similar a una escala logarítmica.
-
 ## Descomposición STL
-
 ```{r}
 mi_serie |>
   model(STL(box_cox(Turnover, lambda))) |>
   components() |>
   autoplot()
 ```
-
 - Gráfica 1: Es la serie transformada con la misma tendencia creciente, pero con picos estacionales de un tamaño más parejo a lo largo del tiempo. Se estabilizó la varianza.
-
 - Gráfica 2: Se muestra la **tendencia** de largo plazo sin el ruido de la estacionalidad. Se puede observar que esta sube de forma sostenida.
-
 - Gráfica 3: Es el patrón de la **estacionalidad**, en donde se observa que es muy regular y repetitivo, prácticamente idéntico ciclo tras ciclo.
-
 - Gráfica 4: Los **residuos** que quedan después de quitar la tendencia y la estacionalidad. Se visualizan puntos aleatorios; aunque hay un pico más grande alrededor de finales de los 80s, el cual podría indicar un evento específico.
-
-
 ## División train / test
-
 La serie termina en diciembre de 2018, así que el conjunto de prueba
 abarca los últimos 24 meses observados: enero 2017 – diciembre 2018.
-
 ```{r}
 h_test <- 24
 corte  <- max(mi_serie$Month) - h_test
-
 serie_train <- mi_serie |> filter(Month <= corte)
 serie_test  <- mi_serie |> filter(Month >  corte)
-
 c(train = nrow(serie_train), test = nrow(serie_test))
 range(serie_train$Month)
 range(serie_test$Month)
 ```
-
-
 ## Modelo baseline
-
 El parámetro de Box-Cox se reestima usando **únicamente el conjunto de
 entrenamiento**. El valor resultante (0.061) difiere del estimado sobre
 la serie completa (0.088), aunque ambos se ubican cerca de cero, por lo
 que en la práctica se trata de una transformación aproximadamente
 logarítmica en los dos casos. Estimarlo con todos los datos implicaría
-usar información del conjunto de prueba para calibrar el modelo, lo cual
-contamina la evaluación posterior.
-
-```{r}
-lambda_train <- serie_train |>
-  features(Turnover, features = guerrero) |>
-  pull(lambda_guerrero)
-
-c(completa = lambda, train = lambda_train)
-```
-
-```{r}
-fit_train <- serie_train |>
-  model(
-    baseline = decomposition_model(
-      STL(box_cox(Turnover, lambda_train)),
-      RW(season_adjust ~ drift()),
-      SNAIVE(season_year)
-    )
-  )
-
-fit_train
-```
-
-El modelo baseline descompone la serie transformada con STL y pronostica
-cada componente por separado: la serie ajustada estacionalmente con una
-caminata aleatoria con deriva, que captura la tendencia creciente, y el
-componente estacional con SNAIVE, que repite el patrón del año anterior.
-Al final `decomposition_model()` recompone ambos pronósticos y revierte
-la transformación Box-Cox, de modo que el resultado queda en la escala
-original de `Turnover`.
-
-Para el reentrenamiento con la serie completa se debe usar `lambda`
-(estimado sobre toda la serie en la sección de estabilización de
-varianza), no `lambda_train`, ya que en esa etapa ya no existe un
-conjunto de prueba que proteger.
