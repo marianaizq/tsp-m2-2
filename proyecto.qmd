@@ -6,60 +6,241 @@ format:
     embed-resources: true
     toc: true
 ---
+
+
 ```{r}
 library(fpp3)
+
 mi_serie <- aus_retail |> 
   filter(`Series ID` == "A3349401C")
+
 mi_serie
 ```
 ## Análisis exploratorio
 ```{r}
 mi_serie |> autoplot(Turnover)
 ```
+
 Como se puede observar, la serie muestra una tendencia creciente notoria a lo largo del tiempo (1982-2018). De igual forma, se presenta una estacionalidad anual con picos recurrentes que coinciden con temporadas altas. Por el otro lado, la amplitud de la varianza aumenta conforme crece el nivel de la serie, lo cual nos dice que es necesario estabilizar la varianza. 
+
+
 ```{r}
 mi_serie |> gg_season(Turnover)
 ```
+
 El gráfico estacional nos confirma que diciembre es el mes con mayor turnover en todos los años de la serie, seguido de una caída en enero y febrero. Este suceso se repite de forma estable año con año, aunque la magnitud de estos picos crece junto con el nivel de la serie.
+
 ```{r}
 mi_serie |> gg_subseries(Turnover)
 ```
+
 El gráfico de subseries nos confirma que el patrón estacional es estable a lo largo del tiempo. Cada mes mantiene una tendencia de crecimiento similar y diciembre se mantiene como el mes con un mayor turnover promedio.
+
 > **Conclusión EDA:** la serie presenta tendencia creciente y estacionalidad anual, con una varianza que aumenta junto con el nivel. Esto indica que se necesita estabilizar la varianza antes de modelar.
+
+
 ## Estabilización de varianza
+
 ```{r}
 lambda <- mi_serie |>
   features(Turnover, features = guerrero) |>
   pull(lambda_guerrero)
+
 lambda
 ```
+
 Se estimó el parámetro de Box-Cox y nos dio un resultado de (0.088). Este valor es cercano a 0, lo cual confirma que se requiere estabilizar la varianza, con una transformación similar a una escala logarítmica.
+
 ## Descomposición STL
+
 ```{r}
 mi_serie |>
   model(STL(box_cox(Turnover, lambda))) |>
   components() |>
   autoplot()
 ```
+
 - Gráfica 1: Es la serie transformada con la misma tendencia creciente, pero con picos estacionales de un tamaño más parejo a lo largo del tiempo. Se estabilizó la varianza.
+
 - Gráfica 2: Se muestra la **tendencia** de largo plazo sin el ruido de la estacionalidad. Se puede observar que esta sube de forma sostenida.
+
 - Gráfica 3: Es el patrón de la **estacionalidad**, en donde se observa que es muy regular y repetitivo, prácticamente idéntico ciclo tras ciclo.
+
 - Gráfica 4: Los **residuos** que quedan después de quitar la tendencia y la estacionalidad. Se visualizan puntos aleatorios; aunque hay un pico más grande alrededor de finales de los 80s, el cual podría indicar un evento específico.
+
+
 ## División train / test
+
 La serie termina en diciembre de 2018, así que el conjunto de prueba
 abarca los últimos 24 meses observados: enero 2017 – diciembre 2018.
+
 ```{r}
 h_test <- 24
 corte  <- max(mi_serie$Month) - h_test
+
 serie_train <- mi_serie |> filter(Month <= corte)
 serie_test  <- mi_serie |> filter(Month >  corte)
+
 c(train = nrow(serie_train), test = nrow(serie_test))
 range(serie_train$Month)
 range(serie_test$Month)
 ```
+
+
 ## Modelo baseline
+
 El parámetro de Box-Cox se reestima usando **únicamente el conjunto de
 entrenamiento**. El valor resultante (0.061) difiere del estimado sobre
 la serie completa (0.088), aunque ambos se ubican cerca de cero, por lo
 que en la práctica se trata de una transformación aproximadamente
 logarítmica en los dos casos. Estimarlo con todos los datos implicaría
+usar información del conjunto de prueba para calibrar el modelo, lo cual
+contamina la evaluación posterior.
+
+```{r}
+lambda_train <- serie_train |>
+  features(Turnover, features = guerrero) |>
+  pull(lambda_guerrero)
+
+c(completa = lambda, train = lambda_train)
+```
+
+```{r}
+fit_train <- serie_train |>
+  model(
+    baseline = decomposition_model(
+      STL(box_cox(Turnover, lambda_train)),
+      RW(season_adjust ~ drift()),
+      SNAIVE(season_year)
+    )
+  )
+
+fit_train
+```
+
+El modelo baseline descompone la serie transformada con STL y pronostica
+cada componente por separado: la serie ajustada estacionalmente con una
+caminata aleatoria con deriva, que captura la tendencia creciente, y el
+componente estacional con SNAIVE, que repite el patrón del año anterior.
+Al final `decomposition_model()` recompone ambos pronósticos y revierte
+la transformación Box-Cox, de modo que el resultado queda en la escala
+original de `Turnover`.
+
+Para el reentrenamiento con la serie completa se debe usar `lambda`
+(estimado sobre toda la serie en la sección de estabilización de
+varianza), no `lambda_train`, ya que en esa etapa ya no existe un
+conjunto de prueba que proteger.
+
+## Evaluación del modelo
+
+Se evalúa el modelo baseline con los 24 meses reservados para prueba,
+de enero de 2017 a diciembre de 2018. El modelo se mantiene ajustado con
+los 417 datos de entrenamiento, que terminan en diciembre de 2016.
+De esta manera, se evalúa su capacidad para pronosticar observaciones
+que no se utilizaron para estimarlo.
+
+### Exactitud de los pronósticos
+
+```{r fase3-metricas}
+# Pronosticar los meses reservados para prueba.
+fc_test <- fit_train |> forecast(new_data = serie_test)
+
+# mi_serie incluye el entrenamiento necesario para calcular la escala de MASE.
+# Los errores se calculan en las fechas de fc_test: enero 2017 - diciembre 2018.
+metricas_test <- fc_test |>
+  accuracy(mi_serie) |>
+  select(.model, .type, MASE, MAE, RMSE)
+
+knitr::kable(
+  metricas_test,
+  digits = 3,
+  col.names = c("Modelo", "Conjunto", "MASE", "MAE", "RMSE")
+)
+```
+
+El **MASE es `r round(metricas_test$MASE, 3)`**. En esta serie mensual,
+la escala corresponde al error absoluto medio del método naïve estacional
+en el entrenamiento: utilizar el valor del mismo mes del año anterior
+como pronóstico. Por tanto, el error absoluto medio del baseline en
+prueba equivale a aproximadamente 1.47 veces esa referencia, es decir,
+es 47.2% mayor. Esta comparación usa una referencia del entrenamiento;
+para comparar ambos métodos directamente en prueba habría que evaluar
+también los pronósticos del naïve estacional en esos mismos 24 meses.
+
+Como métricas complementarias se reportan **MAE** y **RMSE**. El MAE es
+`r round(metricas_test$MAE, 3)` millones de dólares australianos e indica
+cuánto se alejan los pronósticos de los valores observados, en promedio
+y en términos absolutos. El RMSE es
+`r round(metricas_test$RMSE, 3)` millones de dólares australianos y da
+mayor peso a los errores grandes. Se incluyen porque expresan el tamaño
+del error en las unidades originales de `Turnover`.
+
+### Diagnóstico de residuos
+
+```{r fase3-residuos, warning=FALSE, fig.width=10, fig.height=7}
+fit_train |>
+  select(baseline) |>
+  gg_tsresiduals()
+```
+
+Se revisan los residuos de innovación del modelo ajustado, en la escala
+transformada por Box-Cox. Estos residuos corresponden al entrenamiento,
+mientras que las métricas anteriores corresponden al conjunto de prueba.
+Hay 405 residuos disponibles; las 12 observaciones iniciales no tienen
+residuos debido al rezago anual del componente estacional.
+
+- **Serie de residuos:** los valores oscilan alrededor de cero, con una
+  media cercana a -0.000099. También se observan valores extremos, por
+  lo que estar centrados en cero no basta para considerar adecuado el
+  diagnóstico.
+- **ACF:** varias barras exceden las bandas de referencia, especialmente
+  en los rezagos 1, 23 y 24. Esto sugiere dependencia temporal que el
+  modelo no ha capturado completamente y se contrasta con Ljung-Box.
+- **Histograma:** la mayor parte de los residuos se concentra cerca de
+  cero, con observaciones extremas en ambas colas. Esta inspección visual
+  por sí sola no permite asegurar normalidad.
+
+### Prueba de Ljung-Box
+
+Se contrasta la hipótesis nula de ausencia de autocorrelación en los
+primeros 24 rezagos. Se eligen 24 porque los datos son mensuales y
+equivalen a dos ciclos anuales. Se utiliza un nivel de significancia
+de 5%.
+
+```{r fase3-ljung-box}
+prueba_lb <- fit_train |>
+  select(baseline) |>
+  augment() |>
+  features(.innov, ljung_box, lag = 24)
+
+# Mostrar los valores p muy pequeños sin reportarlos como exactamente cero.
+tabla_lb <- prueba_lb |>
+  transmute(
+    Modelo = .model,
+    `Estadístico Ljung-Box` = round(lb_stat, 3),
+    `Valor p` = if_else(
+      lb_pvalue < 0.001,
+      "< 0.001",
+      formatC(lb_pvalue, format = "f", digits = 3)
+    )
+  )
+
+knitr::kable(tabla_lb)
+```
+
+El estadístico de Ljung-Box es **`r round(prueba_lb$lb_stat, 3)`** y el
+**valor p es menor que 0.001**. Como es menor que 0.05, se rechaza la
+hipótesis nula. Hay evidencia de autocorrelación en los residuos, lo
+que coincide con los patrones observados en la ACF. En consecuencia,
+los residuos no son compatibles con ruido blanco en este diagnóstico.
+
+### Conclusión de la evaluación
+
+El baseline presenta un MAE de aproximadamente 24.798 millones de
+dólares australianos y un MASE de 1.472 en el conjunto de prueba.
+Su error absoluto medio supera la referencia naïve estacional calculada
+en el entrenamiento. Además, la ACF y la prueba de Ljung-Box muestran
+dependencia temporal en los residuos. Aunque su media es cercana a cero,
+el modelo todavía deja estructura temporal sin explicar. Estos resultados
+permiten utilizarlo como punto de partida y documentar sus limitaciones
+para futuras mejoras del pronóstico.
