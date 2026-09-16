@@ -16,7 +16,10 @@ mi_serie <- aus_retail |>
 
 mi_serie
 ```
+
+
 ## Análisis exploratorio
+
 ```{r}
 mi_serie |> autoplot(Turnover)
 ```
@@ -118,6 +121,21 @@ fit_train <- serie_train |>
 fit_train
 ```
 
+
+```{r}
+fit_compare <- serie_train |>
+  model(
+    baseline = decomposition_model(
+      STL(box_cox(Turnover, lambda_train)),
+      RW(season_adjust ~ drift()),
+      SNAIVE(season_year)
+    ),
+    snaive_puro = SNAIVE(Turnover)
+  )
+
+fit_compare
+```
+
 El modelo baseline descompone la serie transformada con STL y pronostica
 cada componente por separado: la serie ajustada estacionalmente con una
 caminata aleatoria con deriva, que captura la tendencia creciente, y el
@@ -143,13 +161,18 @@ que no se utilizaron para estimarlo.
 
 ```{r fase3-metricas}
 # Pronosticar los meses reservados para prueba.
-fc_test <- fit_train |> forecast(new_data = serie_test)
+fc_test <- fit_compare |> forecast(new_data = serie_test)
 
 # mi_serie incluye el entrenamiento necesario para calcular la escala de MASE.
 # Los errores se calculan en las fechas de fc_test: enero 2017 - diciembre 2018.
 metricas_test <- fc_test |>
   accuracy(mi_serie) |>
   select(.model, .type, MASE, MAE, RMSE)
+
+mase_baseline <- metricas_test |> filter(.model == "baseline") |> pull(MASE)
+mae_baseline  <- metricas_test |> filter(.model == "baseline") |> pull(MAE)
+rmse_baseline <- metricas_test |> filter(.model == "baseline") |> pull(RMSE)
+
 
 knitr::kable(
   metricas_test,
@@ -158,20 +181,27 @@ knitr::kable(
 )
 ```
 
-El **MASE es `r round(metricas_test$MASE, 3)`**. En esta serie mensual,
+El **MASE es `r round(mase_baseline, 3)`**. En esta serie mensual,
 la escala corresponde al error absoluto medio del método naïve estacional
 en el entrenamiento: utilizar el valor del mismo mes del año anterior
 como pronóstico. Por tanto, el error absoluto medio del baseline en
 prueba equivale a aproximadamente 1.47 veces esa referencia, es decir,
-es 47.2% mayor. Esta comparación usa una referencia del entrenamiento;
-para comparar ambos métodos directamente en prueba habría que evaluar
-también los pronósticos del naïve estacional en esos mismos 24 meses.
+es 47.2% mayor. 
+
+Se comparó el modelo baseline (descomposición STL + RW con deriva + SNAIVE)
+contra un `SNAIVE()` puro sobre el mismo conjunto de prueba. El SNAIVE puro
+obtuvo un MASE de 1.018, MAE de 17.142 y RMSE de 21.687, superando al modelo
+baseline en las tres métricas (MASE 1.472, MAE 24.798, RMSE 28.633). Esto
+indica que, para esta serie en particular, el componente de deriva (drift)
+del modelo baseline introduce más error del que corrige, y que un pronóstico
+simple basado únicamente en el patrón estacional del año anterior es más
+preciso en el horizonte de prueba evaluado.
 
 Como métricas complementarias se reportan **MAE** y **RMSE**. El MAE es
-`r round(metricas_test$MAE, 3)` millones de dólares australianos e indica
+`r round(mae_baseline, 3)` millones de dólares australianos e indica
 cuánto se alejan los pronósticos de los valores observados, en promedio
 y en términos absolutos. El RMSE es
-`r round(metricas_test$RMSE, 3)` millones de dólares australianos y da
+`r round(rmse_baseline, 3)` millones de dólares australianos y da
 mayor peso a los errores grandes. Se incluyen porque expresan el tamaño
 del error en las unidades originales de `Turnover`.
 
@@ -237,10 +267,65 @@ los residuos no son compatibles con ruido blanco en este diagnóstico.
 ### Conclusión de la evaluación
 
 El baseline presenta un MAE de aproximadamente 24.798 millones de
-dólares australianos y un MASE de 1.472 en el conjunto de prueba.
-Su error absoluto medio supera la referencia naïve estacional calculada
-en el entrenamiento. Además, la ACF y la prueba de Ljung-Box muestran
-dependencia temporal en los residuos. Aunque su media es cercana a cero,
-el modelo todavía deja estructura temporal sin explicar. Estos resultados
-permiten utilizarlo como punto de partida y documentar sus limitaciones
-para futuras mejoras del pronóstico.
+dólares australianos y un MASE de 1.472 en el conjunto de prueba,
+desempeño inferior al del SNAIVE puro evaluado como comparación
+(MASE 1.018, MAE 17.142). Además, la ACF y la prueba de Ljung-Box
+muestran dependencia temporal en los residuos. Aunque su media es
+cercana a cero, el modelo todavía deja estructura temporal sin
+explicar. Estos resultados permiten utilizarlo como punto de partida
+tal como lo requiere el proyecto, documentando abiertamente sus
+limitaciones frente a un benchmark más simple.
+
+## Forecast final
+
+### Reentrenamiento de la serie completa
+
+```{r}
+fit_full <- mi_serie |>
+  model(
+    baseline = decomposition_model(
+      STL(box_cox(Turnover, lambda)),
+      RW(season_adjust ~ drift()),
+      SNAIVE(season_year)
+    )
+  )
+
+fit_full
+```
+
+
+### Pronóstico a 24 meses
+
+
+```{r}
+fc_final <- fit_full |> forecast(h = "24 months")
+
+fc_final |> autoplot(mi_serie)
+```
+
+El pronóstico proyecta el turnover de la serie NSW de farmacia/cosmética/tocador para los 24 meses siguientes al final de la serie observada. La proyección conserva la tendencia creciente y el patrón estacional capturado por el modelo decomposition_model(), con bandas de confianza del 80% y 95% que se amplían conforme aumenta el horizonte de pronóstico — comportamiento esperado, ya que la incertidumbre crece entre más lejos se proyecta.
+
+
+### Limitaciones
+
+Este modelo es un baseline y como tal tiene limitaciones documentadas en la Fase 3: un MASE de 1.472 (peor que la referencia naïve estacional) y autocorrelación residual significativa (Ljung-Box, p < 0.001). Esto sugiere que el modelo no captura toda la estructura temporal de la serie, por lo que el pronóstico final debe interpretarse con cautela, especialmente en el mediano-largo plazo del horizonte proyectado.
+
+
+### Recomendaciones
+
+Como trabajo futuro, se recomienda evaluar modelos de pronóstico más sofisticados, que se explorarán en módulos posteriores del curso, y comparar su desempeño contra este baseline usando las mismas métricas (MASE, MAE, RMSE) sobre el mismo conjunto de prueba.
+
+
+### Conclusiones del forecast
+
+El pronóstico a 24 meses mantiene la tendencia creciente observada históricamente en Turnover. El intervalo de confianza se ensancha conforme aumenta el horizonte de pronóstico, reflejando la incertidumbre creciente típica de proyecciones a futuro — un comportamiento esperado y no un
+indicio de error. Dado que el modelo baseline mostró en la Fase 3 un MASE de 1.472, un desempeño inferior al SNAIVE puro (MASE 1.018), y autocorrelación residual no capturada, este pronóstico debe interpretarse con cautela y como una referencia inicial, útil como punto de comparación para modelos más avanzados en fases futuras del proyecto.
+
+
+## Conclusiones finales
+
+El proyecto siguió el flujo estándar de modelado de series de tiempo: se identificó una serie con tendencia creciente y estacionalidad anual marcada (Fase 1), lo que motivó estabilizar la varianza mediante una transformación Box-Cox (λ ≈ 0.088) antes de modelar. Con base en esto se ajustó un modelo baseline mediante descomposición STL, combinando una caminata aleatoria con deriva para el componente de tendencia y SNAIVE para el componente estacional (Fase 2). La evaluación sobre un conjunto de prueba de 24 meses mostró un desempeño inferior incluso al de un SNAIVE puro (MASE = 1.472
+vs. 1.018, MAE ≈ 24.8 vs. 17.1 millones AUD) y evidencia de autocorrelación residual no capturada (Ljung-Box, p < 0.001), lo que indica que el modelo, aunque razonable como punto de partida, deja estructura temporal sin explicar (Fase 3). Finalmente, se reentrenó el modelo con la serie completa y se generó un pronóstico a 24 meses, cuyo intervalo de confianza se ensancha adecuadamente con el horizonte, reflejando la incertidumbre creciente propia de cualquier proyección a futuro (Fase 4). En conjunto, estos resultados sitúan al modelo baseline como una referencia útil pero mejorable, y sugieren que modelos modelos de pronóstico más avanzados podrían capturar mejor la dependencia
+temporal residual en futuras iteraciones del proyecto.
+
+
